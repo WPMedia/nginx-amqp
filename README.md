@@ -6,3 +6,6 @@ nginx-amqp
    make <br />
    sudo make <br />
 3. Using above nginx.conf (which should be put in /usr/local/nginx/conf/)
+
+==========
+You may need to declare exchange and queue first.
