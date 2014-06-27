@@ -205,8 +205,8 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	if(rc!=NGX_OK){
 		return NGX_ERROR;
 	}
-	messagebody=(char*)malloc(rum.len);
-	memset(messagebody, 0, sizeof(messagebody)+1);
+	messagebody=(char*)malloc(rum.len+1);
+	memset(messagebody, 0, rum.len+1);
 	memcpy(messagebody, rum.data, rum.len);
 
 	//amqp variables
@@ -291,8 +291,8 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
     //response.data=(u_char*)"Message sent!\n";
     //response.len=sizeof("Message sent!\n");
     response.data=ngx_pcalloc(r->pool, 1024);
-    ngx_sprintf(response.data, "hostname: %s, port: %d, exchange: %s, queue: %s\nreferer: %s\n", 
-    	hostname, port, exchange, routingkey, referer.data);
+    ngx_sprintf(response.data, "hostname: %s, port: %d, exchange: %s, queue: %s\nreferer: %s\nrum: %s\n", 
+    	hostname, port, exchange, routingkey, referer.data, rum.data);
     response.len=ngx_strlen(response.data);
 
 	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
