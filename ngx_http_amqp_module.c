@@ -196,8 +196,8 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		referer=r->headers_in.referer->value;
 	}
 	else{
-		referer.data=(u_char*)"";
-		referer.len=ngx_strlen(referer.data);
+		referer.data=(u_char*)"null";
+		referer.len=sizeof(referer)-1;
 	}
 
 	//parse for messagebody
@@ -205,9 +205,14 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	if(rc!=NGX_OK){
 		return NGX_ERROR;
 	}
-	messagebody=(char*)malloc(rum.len+1);
-	memset(messagebody, 0, rum.len+1);
-	memcpy(messagebody, rum.data, rum.len);
+
+	messagebody=(char*)malloc(rum.len+referer.len+10);
+
+	memset(messagebody, 0, rum.len+referer.len+10+1);
+	memcpy(messagebody, rum.data, rum.len-1);
+	strcat(messagebody, ",referer:");
+	strcat(messagebody, (char*)referer.data);
+	strcat(messagebody, "}");
 
 	//amqp variables
 	hostname=(char*)malloc(amcf->amqp_ip.len);
@@ -281,18 +286,16 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
   	}
   	
 
-	//for test
 
 	r->headers_out.content_type_len = sizeof("text/html") - 1;
-    r->headers_out.content_type.len = sizeof("text/html") - 1;
     r->headers_out.content_type.data = (u_char *) "text/html";
 	
 
     //response.data=(u_char*)"Message sent!\n";
     //response.len=sizeof("Message sent!\n");
     response.data=ngx_pcalloc(r->pool, 1024);
-    ngx_sprintf(response.data, "hostname: %s, port: %d, exchange: %s, queue: %s\nreferer: %s\nrum: %s\n", 
-    	hostname, port, exchange, routingkey, referer.data, rum.data);
+    ngx_sprintf(response.data, "hostname: %s, port: %d, exchange: %s, queue: %s\nmsg: %s\n", 
+    	hostname, port, exchange, routingkey, messagebody);
     response.len=ngx_strlen(response.data);
 
 	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
