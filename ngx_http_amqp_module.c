@@ -195,6 +195,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	u_char* ref;
 	size_t len;
 	time_t date;
+	ngx_str_t client_ip;
 
 	//time created
 	date=time(0);
@@ -202,6 +203,8 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	ngx_memzero(create_time.data, sizeof(create_time.data)+1);
 	ngx_http_time(create_time.data, date);
 	create_time.len=ngx_strlen(create_time.data);
+
+	
 /*
 	if(r->headers_in.date){
 		date=ngx_http_parse_time(r->headers_in.date->value.data, r->headers_in.date->value.len);
@@ -243,6 +246,14 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		referer.data=(u_char*)"null";
 		referer.len=sizeof(referer)-1;
 	}
+	
+
+	//client ip
+	client_ip.data=ngx_pcalloc(r->pool, r->connection->addr_text.len);
+	client_ip.len=r->connection->addr_text.len;
+	ngx_memzero(client_ip.data, sizeof(client_ip)+1);
+	ngx_memcpy(client_ip.data, r->connection->addr_text.data, r->connection->addr_text.len);
+	
 
 	//parse for messagebody
 	rc=ngx_http_arg(r, (u_char*) "rum", 3, &rum);
@@ -250,9 +261,9 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		return NGX_ERROR;
 	}
 
-	messagebody=(char*)malloc(rum.len+referer.len+user_agent.len+create_time.len+27);
+	messagebody=(char*)malloc(rum.len+referer.len+user_agent.len+create_time.len+client_ip.len+36);
 
-	memset(messagebody, 0, rum.len+referer.len+user_agent.len+create_time.len+27+1);
+	memset(messagebody, 0, rum.len+referer.len+user_agent.len+create_time.len+client_ip.len+36+1);
 	memcpy(messagebody, rum.data, rum.len);
 	strcat(messagebody, "DELIMITER");
 	strcat(messagebody, (char*)referer.data);
@@ -260,6 +271,8 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	strcat(messagebody, (char*)user_agent.data);
 	strcat(messagebody, "DELIMITER");
 	strcat(messagebody, (char*)create_time.data);
+	strcat(messagebody, "DELIMITER");
+	strcat(messagebody, (char*)client_ip.data);
 
 	//amqp variables
 	hostname=(char*)malloc(amcf->amqp_ip.len);
@@ -404,7 +417,6 @@ static char* ngx_http_amqp_merge_conf(ngx_conf_t *cf, void* parent, void* child)
     ngx_conf_merge_str_value(conf->amqp_queue, prev->amqp_queue, "rumQueue");
     ngx_conf_merge_str_value(conf->amqp_user, prev->amqp_user, "guest");
     ngx_conf_merge_str_value(conf->amqp_password, prev->amqp_password, "guest");
-
 
     return NGX_CONF_OK;
 }
