@@ -10,7 +10,7 @@ https://github.com/alanxz/rabbitmq-c
    ./configure --add-module=/path/to/nginx/amqp <br />
    make <br />
    sudo make <br />
-4. Using above nginx.conf (which should be put in /usr/local/nginx/conf/)
+4. Use "location /test{ ... }" part from above nginx.conf (which should be put in /usr/local/nginx/conf/)
 
 ==========
 You may need to declare exchange and queue first.
