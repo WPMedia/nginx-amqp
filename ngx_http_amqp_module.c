@@ -189,11 +189,55 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	char* usr;
 	char* passwd;
 	ngx_int_t rc;
-	ngx_str_t rum, referer;
+	ngx_str_t rum, referer, user_agent;
+	ngx_str_t create_time;
+	
+	u_char* ref;
+	size_t len;
+	time_t date;
+
+	//time created
+	date=time(0);
+	create_time.data=ngx_pcalloc(r->pool, 40);
+	ngx_memzero(create_time.data, sizeof(create_time.data)+1);
+	ngx_http_time(create_time.data, date);
+	create_time.len=ngx_strlen(create_time.data);
+/*
+	if(r->headers_in.date){
+		date=ngx_http_parse_time(r->headers_in.date->value.data, r->headers_in.date->value.len);
+		ngx_http_time(create_time.data, date);
+		create_time.len=sizeof(create_time)-1;
+	}
+	else{
+		create_time.data=(u_char*)"null";
+		create_time.len=sizeof(create_time)-1;
+	}
+*/
+	//user-agent
+	if(r->headers_in.user_agent!=NULL){
+		user_agent.data=r->headers_in.user_agent->value.data;
+		user_agent.len=r->headers_in.user_agent->value.len;
+	}
+	else{
+		user_agent.data=(u_char*)"null";
+		user_agent.len=sizeof(user_agent)-1;
+	}
 
 	//referer
 	if(r->headers_in.referer!=NULL){
-		referer=r->headers_in.referer->value;
+		//referer=r->headers_in.referer->value;
+		ref=r->headers_in.referer->value.data;
+		len=r->headers_in.referer->value.len;
+		if(ngx_strncasecmp(ref, (u_char*)"http://", 7)==0){
+			ref+=7;
+			len-=7;
+		}
+		else if(ngx_strncasecmp(ref, (u_char*)"https://", 8)==0){
+			ref+=8;
+			len-=8;
+		}
+		referer.data=ref;
+		referer.len=len;
 	}
 	else{
 		referer.data=(u_char*)"null";
@@ -206,13 +250,16 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		return NGX_ERROR;
 	}
 
-	messagebody=(char*)malloc(rum.len+referer.len+10);
+	messagebody=(char*)malloc(rum.len+referer.len+user_agent.len+create_time.len+27);
 
-	memset(messagebody, 0, rum.len+referer.len+10+1);
-	memcpy(messagebody, rum.data, rum.len-1);
-	strcat(messagebody, ",referer:");
+	memset(messagebody, 0, rum.len+referer.len+user_agent.len+create_time.len+27+1);
+	memcpy(messagebody, rum.data, rum.len);
+	strcat(messagebody, "DELIMITER");
 	strcat(messagebody, (char*)referer.data);
-	strcat(messagebody, "}");
+	strcat(messagebody, "DELIMITER");
+	strcat(messagebody, (char*)user_agent.data);
+	strcat(messagebody, "DELIMITER");
+	strcat(messagebody, (char*)create_time.data);
 
 	//amqp variables
 	hostname=(char*)malloc(amcf->amqp_ip.len);
