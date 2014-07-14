@@ -15,6 +15,7 @@ typedef struct{
 	ngx_str_t amqp_password;
 	amqp_socket_t* socket;
 	amqp_connection_state_t conn;
+        ngx_uint_t init;
 }ngx_http_amqp_conf_t;
 
 
@@ -87,13 +88,13 @@ static ngx_command_t ngx_http_amqp_commands[] = {
 static ngx_http_module_t ngx_http_amqp_module_ctx = {
     NULL,                          /* preconfiguration */
 	NULL,                         /* postconfiguration */
- 
+
     NULL,                          /* create main configuration */
     NULL,                          /* init main configuration */
- 
+
     NULL,                          /* create server configuration */
     NULL,                          /* merge server configuration */
- 
+
     ngx_http_amqp_create_conf,   /* create location configuration */
     ngx_http_amqp_merge_conf     /* merge location configuration */
 };
@@ -178,8 +179,6 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	ngx_buf_t* b;
 	ngx_str_t response;
 
-	amqp_connection_state_t conn=amcf->conn;
-
 	char* hostname;
 	int port;
 
@@ -201,12 +200,13 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	date=time(0);
 
 	char* msg;
+        int init=(int)amcf->init;
 
 	create_time.data=ngx_pcalloc(r->pool, 40);
 	ngx_memzero(create_time.data, sizeof(create_time.data)+1);
 	ngx_http_time(create_time.data, date);
 	create_time.len=ngx_strlen(create_time.data);
-	
+
 	//user-agent
 	if(r->headers_in.user_agent!=NULL){
 		user_agent.data=r->headers_in.user_agent->value.data;
@@ -236,14 +236,14 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		referer.data=(u_char*)"null";
 		referer.len=sizeof(referer)-1;
 	}
-	
+
 
 	//client ip
 	client_ip.data=ngx_pcalloc(r->pool, r->connection->addr_text.len);
 	client_ip.len=r->connection->addr_text.len;
 	ngx_memzero(client_ip.data, sizeof(client_ip)+1);
 	ngx_memcpy(client_ip.data, r->connection->addr_text.data, r->connection->addr_text.len);
-	
+
 
 	//parse for messagebody
 	rc=ngx_http_arg(r, (u_char*) "rum", 3, &rum);
@@ -265,13 +265,13 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	strcat(messagebody, (char*)client_ip.data);
 
 	//amqp variables
-	
+
 	hostname=(char*)malloc(amcf->amqp_ip.len);
 	memset(hostname, 0, sizeof(hostname)+1);
 	memcpy(hostname, amcf->amqp_ip.data, amcf->amqp_ip.len+1);
 
 	port=(int)amcf->amqp_port;
-	
+
 	exchange=(char*)malloc(amcf->amqp_exchange.len);
 	memset(exchange, 0, sizeof(exchange)+1);
 	memcpy(exchange, amcf->amqp_exchange.data, amcf->amqp_exchange.len+1);
@@ -294,30 +294,36 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		return NGX_ERROR;
 	}
 */
+   if(amcf->init){
 	int status=amqp_socket_open(amcf->socket, hostname, port);
 	if(status){
 		msg="Open error!";
 		goto error;
 	}
 
-	
-	if(die_on_amqp_error(amqp_login(conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN, usr, passwd), 
+
+	if(die_on_amqp_error(amqp_login(amcf->conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN, usr, passwd),
 		"Logging in")){
 		msg="Login error!";
 		goto error;
 	}
 
-	amqp_channel_open(conn, 1);
-	if(die_on_amqp_error(amqp_get_rpc_reply(conn), "Opening channel")){
-		msg="Channel error!";
-		goto error;
+	amqp_channel_open(amcf->conn, 1);
+        amcf->init=0;
+   }
+
+
+	if(die_on_amqp_error(amqp_get_rpc_reply(amcf->conn), "Opening channel")){
+           amcf->init=1;
+           return NGX_AGAIN;
 	}
 
     amqp_basic_properties_t props;
+
     props._flags = AMQP_BASIC_CONTENT_TYPE_FLAG | AMQP_BASIC_DELIVERY_MODE_FLAG;
     props.content_type = amqp_cstring_bytes("text/plain");
     props.delivery_mode = 2;
-    if(die_on_error(amqp_basic_publish(conn,
+    if(die_on_error(amqp_basic_publish(amcf->conn,
                                     1,
                                     amqp_cstring_bytes(exchange),
                                     amqp_cstring_bytes(routingkey),
@@ -330,9 +336,12 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	goto error;
     	//return NGX_ERROR;
     }
-	msg="NO ERROR!!!";
+        msg=(char*)malloc(1024);
+        sprintf(msg, "NO ERROR init=%d", init);
+
 /////////////////////////////
-/*    
+
+/*
   	if(die_on_amqp_error(amqp_channel_close(conn, 1, AMQP_REPLY_SUCCESS), "Closing channel")){
   		return NGX_ERROR;
   	}
@@ -343,12 +352,12 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
   	if(die_on_error(amqp_destroy_connection(conn), "Ending connection")){
   		return NGX_ERROR;
   	}
-*/	
+*/
 
 
 	r->headers_out.content_type_len = sizeof("text/html") - 1;
     r->headers_out.content_type.data = (u_char *) "text/html";
-	
+
 
     response.data=ngx_pcalloc(r->pool, 1024);
     ngx_sprintf(response.data, "msg: %s\n%s", messagebody, msg);
@@ -374,6 +383,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	return ngx_http_output_filter(r, &out);
 ////////////////////////////////
 error:
+        amcf->init=1;
 	response.data=ngx_pcalloc(r->pool, 1024);
 	ngx_sprintf(response.data, "Error: %s", msg);
 	response.len=ngx_strlen(response.data);
@@ -381,7 +391,7 @@ error:
 	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	out.buf=b;
 	out.next=NULL;
-	
+
 	b->pos=response.data;
         b->last=response.data+response.len;
         b->memory=1;
@@ -395,7 +405,7 @@ error:
                 return rc;
         }
         return ngx_http_output_filter(r, &out);
-	
+
 
 
 }
@@ -423,12 +433,13 @@ static char * ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
 static void* ngx_http_amqp_create_conf(ngx_conf_t *cf){
     ngx_http_amqp_conf_t* conf;
 
-    conf=(ngx_http_amqp_conf_t*)ngx_pcalloc(cf->pool, 
+    conf=(ngx_http_amqp_conf_t*)ngx_pcalloc(cf->pool,
         sizeof(ngx_http_amqp_conf_t));
     if(conf==NULL){
         return NULL;
     }
 
+    conf->init=1;
     conf->socket=NULL;
     conf->amqp_port=NGX_CONF_UNSET_UINT;
 
@@ -448,6 +459,7 @@ static char* ngx_http_amqp_merge_conf(ngx_conf_t *cf, void* parent, void* child)
     ngx_conf_merge_str_value(conf->amqp_queue, prev->amqp_queue, "rumQueue");
     ngx_conf_merge_str_value(conf->amqp_user, prev->amqp_user, "guest");
     ngx_conf_merge_str_value(conf->amqp_password, prev->amqp_password, "guest");
+    ngx_conf_merge_uint_value(conf->init, prev->init, 1);
 
     return NGX_CONF_OK;
 }
