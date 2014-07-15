@@ -17,6 +17,7 @@ typedef struct{
 	amqp_socket_t* socket;
 	amqp_connection_state_t conn;
 	ngx_uint_t init;
+	ngx_uint_t amqp_debug;
 }ngx_http_amqp_conf_t;
 
 
@@ -83,6 +84,14 @@ static ngx_command_t ngx_http_amqp_commands[] = {
 		offsetof(ngx_http_amqp_conf_t, amqp_password),
 		NULL
 	},
+	{
+		ngx_string("amqp_debug"),
+		NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+		ngx_conf_set_num_slot,
+		NGX_HTTP_LOC_CONF_OFFSET,
+		offsetof(ngx_http_amqp_conf_t, amqp_debug),
+		NULL
+	},
 	ngx_null_command
 };
 
@@ -116,9 +125,10 @@ ngx_module_t ngx_http_amqp_module = {
 };
 
 
-int die_on_error(int x, char const *context, char* error)
+int get_error(int x, char const *context, char* error)
 {
 	if (x < 0) {
+		syslog(LOG_ERR, "%s: %s\n", context, amqp_error_string2(x));
 		sprintf(error, "%s: %s\n", context, amqp_error_string2(x));
 		return 1;
 	}
@@ -126,7 +136,7 @@ int die_on_error(int x, char const *context, char* error)
 }
 
 
-int die_on_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
+int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
 {
 	error=(char*)malloc(1024);
 	switch (x.reply_type) {
@@ -196,11 +206,11 @@ int connect_amqp(ngx_http_amqp_conf_t* amcf, char* error){
 		return -1;
 	}
 	reply=amqp_login(amcf->conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN,(char*)amcf->amqp_user.data, (char*)amcf->amqp_password.data);
-	if(die_on_amqp_error(reply, "Logging in", error)){
+	if(get_amqp_error(reply, "Logging in", error)){
 		return -1;
 	}
 	amqp_channel_open(amcf->conn, 1);
-	if(die_on_amqp_error(amqp_get_rpc_reply(amcf->conn), "Opening channel", error)){
+	if(get_amqp_error(amqp_get_rpc_reply(amcf->conn), "Opening channel", error)){
 		return -1;
 	}
 	return 0;
@@ -217,14 +227,11 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	ngx_buf_t* b;
 	ngx_str_t response;
 
-	//char* hostname;
-	//int port;
 
 	char* exchange;
 	char* routingkey;
 	char* messagebody;
-	//char* usr;
-	//char* passwd;
+
 	ngx_int_t rc;
 	ngx_str_t rum, referer, user_agent;
 	ngx_str_t create_time;
@@ -304,13 +311,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	strcat(messagebody, (char*)client_ip.data);
 
 	//amqp variables
-/*
-	hostname=(char*)malloc(amcf->amqp_ip.len);
-	memset(hostname, 0, sizeof(hostname)+1);
-	memcpy(hostname, amcf->amqp_ip.data, amcf->amqp_ip.len+1);
 
-	port=(int)amcf->amqp_port;
-*/
 	exchange=(char*)malloc(amcf->amqp_exchange.len);
 	memset(exchange, 0, sizeof(exchange)+1);
 	memcpy(exchange, amcf->amqp_exchange.data, amcf->amqp_exchange.len+1);
@@ -318,21 +319,12 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	routingkey=(char*)malloc(amcf->amqp_queue.len);
 	memset(routingkey, 0, sizeof(routingkey)+1);
 	memcpy(routingkey, amcf->amqp_queue.data, amcf->amqp_queue.len+1);
-/*
-	usr=(char*)malloc(amcf->amqp_user.len);
-	memset(usr, 0, sizeof(usr)+1);
-	memcpy(usr, amcf->amqp_user.data, amcf->amqp_user.len);
 
-	passwd=(char*)malloc(amcf->amqp_password.len);
-	memset(passwd, 0, sizeof(passwd)+1);
-	memcpy(passwd, amcf->amqp_password.data, amcf->amqp_exchange.len+1);
-*/
 
-	int error_count=0;
 	msg=(char*)malloc(1024);
-start:
-	if(amcf->init){
-		amcf->init=0;
+
+	if(!amcf->init){
+		amcf->init=1;
 
 		if(connect_amqp(amcf, msg)<0) goto error;
 	}
@@ -342,34 +334,16 @@ start:
 	props._flags = AMQP_BASIC_CONTENT_TYPE_FLAG | AMQP_BASIC_DELIVERY_MODE_FLAG;
 	props.content_type = amqp_cstring_bytes("text/plain");
 	props.delivery_mode = 2;
-	if(die_on_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes(exchange), amqp_cstring_bytes(routingkey), 0, 0, &props, amqp_cstring_bytes(messagebody)), "Publishing", msg)){
-		amcf->init=1;
-		if(error_count==0){
-			error_count++;
-			syslog(LOG_WARNING, "Cannot publish. Try to republish.");
-			goto start;
-		}
-		else{
-			syslog(LOG_ERR, "Publish error. Connection to RabbitMQ cannot be established.");
+	if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes(exchange), amqp_cstring_bytes(routingkey), 0, 0, &props, amqp_cstring_bytes(messagebody)), "Publishing", msg)){
+		syslog(LOG_WARNING, "Cannot publish. Try to republish.");
+		memset(msg, 0, sizeof(msg)+1);
+		if(connect_amqp(amcf, msg)<0) goto error;
+		if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes(exchange), amqp_cstring_bytes(routingkey), 0, 0, &props, amqp_cstring_bytes(messagebody)), "Publishing", msg)){
 			goto error;
 		}
+
 	}
-	sprintf(msg, "NO ERROR init=%d, error_count=%d", init, error_count);
-
-/////////////////////////////
-
-/*
-  	if(die_on_amqp_error(amqp_channel_close(conn, 1, AMQP_REPLY_SUCCESS), "Closing channel")){
-  		return NGX_ERROR;
-  	}
-
-  	if(die_on_amqp_error(amqp_connection_close(conn, AMQP_REPLY_SUCCESS), "Closing connection")){
-  		return NGX_ERROR;
-  	}
-  	if(die_on_error(amqp_destroy_connection(conn), "Ending connection")){
-  		return NGX_ERROR;
-  	}
-*/
+	sprintf(msg, "NO ERROR init=%d", init);
 
 
   	r->headers_out.content_type_len = sizeof("text/html") - 1;
@@ -397,10 +371,10 @@ start:
   	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
   		return rc;
   	}
-  	return ngx_http_output_filter(r, &out);
+  	return amcf->amqp_debug? ngx_http_output_filter(r, &out): NGX_OK;
 ////////////////////////////////
 error:
-  	amcf->init=1;
+  	amcf->init=0;
   	response.data=ngx_pcalloc(r->pool, 1024);
   	ngx_sprintf(response.data, "Error: %s\n", msg);
   	response.len=ngx_strlen(response.data);
@@ -421,26 +395,18 @@ error:
   	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
   		return rc;
   	}
-  	return ngx_http_output_filter(r, &out);
+  	return amcf->amqp_debug? ngx_http_output_filter(r, &out): NGX_OK;
 
 
 
   }
 
   static char * ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
+  	ngx_http_amqp_conf_t* amcf=conf;
+  	amcf->init=0;
   	openlog("nginx-amqp", LOG_CONS|LOG_PID, LOG_LOCAL0);
-	//int status;
-  	//ngx_http_amqp_conf_t* amcf=conf;
-
   	ngx_http_core_loc_conf_t *clcf;
-/*
-	//initialize connection
-	amcf->conn=amqp_new_connection();
-	amcf->socket=amqp_tcp_socket_new(amcf->conn);
-	if(!amcf->socket){
-		return NGX_CONF_ERROR;
-	}
-*/
+
 
 	clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
 	clcf->handler = ngx_http_amqp_handler;
@@ -458,7 +424,8 @@ static void* ngx_http_amqp_create_conf(ngx_conf_t *cf){
 		return NULL;
 	}
 
-	conf->init=1;
+	conf->amqp_debug=NGX_CONF_UNSET_UINT;
+	conf->init=NGX_CONF_UNSET_UINT;
 	conf->socket=NULL;
 	conf->amqp_port=NGX_CONF_UNSET_UINT;
 
@@ -478,7 +445,8 @@ static char* ngx_http_amqp_merge_conf(ngx_conf_t *cf, void* parent, void* child)
 	ngx_conf_merge_str_value(conf->amqp_queue, prev->amqp_queue, "rumQueue");
 	ngx_conf_merge_str_value(conf->amqp_user, prev->amqp_user, "guest");
 	ngx_conf_merge_str_value(conf->amqp_password, prev->amqp_password, "guest");
-	ngx_conf_merge_uint_value(conf->init, prev->init, 1);
+	ngx_conf_merge_uint_value(conf->init, prev->init, 0);
+	ngx_conf_merge_uint_value(conf->amqp_debug, prev->amqp_debug, 0);
 
 	return NGX_CONF_OK;
 }
