@@ -240,7 +240,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	size_t len;
 	time_t date;
 	ngx_str_t client_ip;
-
+	u_char* empty_response;
 	//time created
 	date=time(0);
 
@@ -359,19 +359,28 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
   	out.buf=b;
   	out.next=NULL;
 
-  	b->pos=response.data;
-  	b->last=response.data+response.len;
+  	if(amcf->amqp_debug){
+	  	b->pos=response.data;
+  		b->last=response.data+response.len;
+  		r->headers_out.content_length_n=response.len;
+  	}
+  	else{
+  		empty_response=(u_char*)"\n";
+  		b->pos=empty_response;
+  		b->last=empty_response+sizeof(empty_response);
+  		r->headers_out.content_length_n=sizeof(empty_response);
+  	}
   	b->memory=1;
   	b->last_buf=1;
 
   	r->headers_out.status=NGX_HTTP_OK;
-  	r->headers_out.content_length_n=response.len;
+  	
 
   	rc=ngx_http_send_header(r);
   	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
   		return rc;
   	}
-  	return amcf->amqp_debug? ngx_http_output_filter(r, &out): NGX_OK;
+  	return ngx_http_output_filter(r, &out);
 ////////////////////////////////
 error:
   	amcf->init=0;
@@ -383,19 +392,27 @@ error:
   	out.buf=b;
   	out.next=NULL;
 
-  	b->pos=response.data;
-  	b->last=response.data+response.len;
+  	if(amcf->amqp_debug){
+	  	b->pos=response.data;
+  		b->last=response.data+response.len;
+  		r->headers_out.content_length_n=response.len;
+  	}
+  	else{
+  		empty_response=(u_char*)"Error!";
+  		b->pos=empty_response;
+  		b->last=empty_response+sizeof(empty_response);
+  		r->headers_out.content_length_n=sizeof(empty_response);
+  	}
   	b->memory=1;
   	b->last_buf=1;
 
   	r->headers_out.status=NGX_HTTP_OK;
-  	r->headers_out.content_length_n=response.len;
 
   	rc=ngx_http_send_header(r);
   	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
   		return rc;
   	}
-  	return amcf->amqp_debug? ngx_http_output_filter(r, &out): NGX_OK;
+  	return ngx_http_output_filter(r, &out);
 
 
 
