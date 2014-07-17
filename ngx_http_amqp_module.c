@@ -130,18 +130,18 @@ ngx_module_t ngx_http_amqp_module = {
 };
 
 
-int get_error(int x, char const *context, char* error)
+int get_error(int x, u_char const *context, u_char* error)
 {
 	if (x < 0) {
 		syslog(LOG_ERR, "%s: %s\n", context, amqp_error_string2(x));
-		sprintf(error, "%s: %s\n", context, amqp_error_string2(x));
+		ngx_sprintf(error, "%s: %s\n", context, amqp_error_string2(x));
 		return 1;
 	}
 	return 0;
 }
 
 
-int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
+int get_amqp_error(amqp_rpc_reply_t x, u_char const *context, u_char* error)
 {
 	switch (x.reply_type) {
 		case AMQP_RESPONSE_NORMAL:
@@ -149,12 +149,12 @@ int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
 
 		case AMQP_RESPONSE_NONE:
 		syslog(LOG_ERR, "%s: missing RPC reply type!", context);
-		sprintf(error, "%s: missing RPC reply type!\n", context);
+		ngx_sprintf(error, "%s: missing RPC reply type!\n", context);
 		break;
 
 		case AMQP_RESPONSE_LIBRARY_EXCEPTION:
 		syslog(LOG_ERR, "%s: %s", context, amqp_error_string2(x.library_error));
-		sprintf(error, "%s: %s\n", context, amqp_error_string2(x.library_error));
+		ngx_sprintf(error, "%s: %s\n", context, amqp_error_string2(x.library_error));
 		break;
 
 		case AMQP_RESPONSE_SERVER_EXCEPTION:
@@ -165,7 +165,7 @@ int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
 					context,
 					m->reply_code,
 					(int) m->reply_text.len, (char *) m->reply_text.bytes);
-				sprintf(error, "%s: server connection error %d, message: %.*s\n",
+				ngx_sprintf(error, "%s: server connection error %d, message: %.*s\n",
 					context,
 					m->reply_code,
 					(int) m->reply_text.len, (char *) m->reply_text.bytes);
@@ -177,7 +177,7 @@ int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
 					context,
 					m->reply_code,
 					(int) m->reply_text.len, (char *) m->reply_text.bytes);
-				sprintf(error, "%s: server channel error %d, message: %.*s\n",
+				ngx_sprintf(error, "%s: server channel error %d, message: %.*s\n",
 					context,
 					m->reply_code,
 					(int) m->reply_text.len, (char *) m->reply_text.bytes);
@@ -185,7 +185,7 @@ int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
 			}
 			default:
 			syslog(LOG_ERR, "%s: unknown server error, method id 0x%08X", context, x.reply.id);
-			sprintf(error, "%s: unknown server error, method id 0x%08X\n", context, x.reply.id);
+			ngx_sprintf(error, "%s: unknown server error, method id 0x%08X\n", context, x.reply.id);
 			break;
 		}
 		break;
@@ -194,27 +194,27 @@ int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
 	return 1;
 }
 
-int connect_amqp(ngx_http_amqp_conf_t* amcf, char* error){
+int connect_amqp(ngx_http_amqp_conf_t* amcf, u_char* error){
 	int status;
 	amqp_rpc_reply_t reply;
 	//initialize connection and channel
 	amcf->conn=amqp_new_connection();
 	amcf->socket=amqp_tcp_socket_new(amcf->conn);
 	if(!amcf->socket){
-		error="Creating TCP socket";
+		error=(u_char*)"Creating TCP socket";
 		return -1;
 	}
 	status=amqp_socket_open(amcf->socket, (char*)amcf->amqp_ip.data, (int)amcf->amqp_port);
 	if(status){
-		error="Opening TCP socket";
+		error=(u_char*)"Opening TCP socket";
 		return -1;
 	}
 	reply=amqp_login(amcf->conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN,(char*)amcf->amqp_user.data, (char*)amcf->amqp_password.data);
-	if(get_amqp_error(reply, "Logging in", error)){
+	if(get_amqp_error(reply, (u_char*)"Logging in", error)){
 		return -1;
 	}
 	amqp_channel_open(amcf->conn, 1);
-	if(get_amqp_error(amqp_get_rpc_reply(amcf->conn), "Opening channel", error)){
+	if(get_amqp_error(amqp_get_rpc_reply(amcf->conn), (u_char*)"Opening channel", error)){
 		return -1;
 	}
 	return 0;
@@ -234,10 +234,10 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	ngx_int_t rc;
 	u_char* empty_response;
 
-	char* msg;
+	u_char* msg;
 
 
-	int init=(int)amcf->init;
+	ngx_uint_t init=amcf->init;
 
 	if(amcf->lengths==NULL){
 		messagebody.data=ngx_palloc(r->pool, amcf->script_source.len);
@@ -251,7 +251,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 
 	}
 
-	msg=(char*)malloc(1024);
+	msg=ngx_palloc(r->pool, 1024);
 	memset(msg, 0, sizeof(msg)+1);
 	if(!amcf->init){
 		amcf->init=1;
@@ -264,16 +264,16 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	props._flags = AMQP_BASIC_CONTENT_TYPE_FLAG | AMQP_BASIC_DELIVERY_MODE_FLAG;
 	props.content_type = amqp_cstring_bytes("text/plain");
 	props.delivery_mode = 2;
-	if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)messagebody.data)), "Publishing", msg)){
+	if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)messagebody.data)), (u_char*)"Publishing", msg)){
 		syslog(LOG_WARNING, "Cannot publish. Try to republish.");
 		memset(msg, 0, sizeof(msg)+1);
 		if(connect_amqp(amcf, msg)<0) goto error;
-		if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)messagebody.data)), "Publishing", msg)){
+		if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)messagebody.data)), (u_char*)"Publishing", msg)){
 			goto error;
 		}
 
 	}
-	sprintf(msg, "NO ERROR init=%d", init);
+	ngx_sprintf(msg, "NO ERROR init=%d", init);
 
 
 	r->headers_out.content_type_len = sizeof("text/html") - 1;
@@ -310,7 +310,6 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
 		return rc;
 	}
-	free(msg);
 
 
 	return ngx_http_output_filter(r, &out);
@@ -345,8 +344,6 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
 		return rc;
 	}
-
-	free(msg);
 
 	return ngx_http_output_filter(r, &out);
 
