@@ -141,9 +141,8 @@ int get_error(int x, char const *context, char* error)
 }
 
 
-int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
+int get_amqp_error(amqp_rpc_reply_t x, char const *context, char error[])
 {
-	error=(char*)malloc(1024);
 	switch (x.reply_type) {
 		case AMQP_RESPONSE_NORMAL:
 		return 0;
@@ -237,7 +236,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 
 	char* msg;
 
-	
+
 	int init=(int)amcf->init;
 
 	if(amcf->lengths==NULL){
@@ -250,9 +249,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		}
 	}
 
-
 	msg=(char*)malloc(1024);
-
 	if(!amcf->init){
 		amcf->init=1;
 
@@ -280,11 +277,11 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	r->headers_out.content_type.data = (u_char *) "text/html";
 
 
-	response.data=ngx_pcalloc(r->pool, 1024);
+	response.data=ngx_palloc(r->pool, 1024);
 	ngx_sprintf(response.data, "%s::%s\nmsg: %s\n%s\n", amcf->amqp_exchange.data, amcf->amqp_queue.data, messagebody.data, msg);
 	response.len=ngx_strlen(response.data);
 
-	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+	b=ngx_palloc(r->pool, sizeof(ngx_buf_t));
 	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	out.buf=b;
 	out.next=NULL;
@@ -310,14 +307,15 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
 		return rc;
 	}
+	free(msg);
 	return ngx_http_output_filter(r, &out);
 ////////////////////////////////
 	error:
 	amcf->init=0;
-	response.data=ngx_pcalloc(r->pool, 1024);
+	response.data=ngx_palloc(r->pool, 1024);
 	ngx_sprintf(response.data, "Error: %s\n", msg);
 	response.len=ngx_strlen(response.data);
-	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+	b=ngx_palloc(r->pool, sizeof(ngx_buf_t));
 	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	out.buf=b;
 	out.next=NULL;
@@ -342,6 +340,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
 		return rc;
 	}
+	free(msg);
 	return ngx_http_output_filter(r, &out);
 
 
@@ -391,7 +390,7 @@ static char * ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
 static void* ngx_http_amqp_create_conf(ngx_conf_t *cf){
 	ngx_http_amqp_conf_t* conf;
 
-	conf=(ngx_http_amqp_conf_t*)ngx_pcalloc(cf->pool,
+	conf=(ngx_http_amqp_conf_t*)ngx_palloc(cf->pool,
 		sizeof(ngx_http_amqp_conf_t));
 	if(conf==NULL){
 		return NULL;
