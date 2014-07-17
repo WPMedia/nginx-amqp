@@ -252,7 +252,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	}
 
 	msg=ngx_palloc(r->pool, 1024);
-	memset(msg, 0, sizeof(msg)+1);
+	ngx_memzero(msg, sizeof(msg)+1);
 	if(!amcf->init){
 		amcf->init=1;
 
