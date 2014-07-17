@@ -141,7 +141,7 @@ int get_error(int x, char const *context, char* error)
 }
 
 
-int get_amqp_error(amqp_rpc_reply_t x, char const *context, char error[])
+int get_amqp_error(amqp_rpc_reply_t x, char const *context, char* error)
 {
 	switch (x.reply_type) {
 		case AMQP_RESPONSE_NORMAL:
@@ -240,16 +240,19 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	int init=(int)amcf->init;
 
 	if(amcf->lengths==NULL){
-		messagebody.data=amcf->script_source.data;
+		messagebody.data=ngx_palloc(r->pool, amcf->script_source.len);
+		ngx_memcpy(messagebody.data, amcf->script_source.data, amcf->script_source.len);
 		messagebody.len=amcf->script_source.len;
 	}
 	else{
 		if(ngx_http_script_run(r, &messagebody, amcf->lengths->elts, 0, amcf->values->elts)==NULL){
 			return NGX_ERROR;
 		}
+
 	}
 
 	msg=(char*)malloc(1024);
+	memset(msg, 0, sizeof(msg)+1);
 	if(!amcf->init){
 		amcf->init=1;
 
@@ -278,7 +281,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 
 
 	response.data=ngx_palloc(r->pool, 1024);
-	ngx_sprintf(response.data, "%s::%s\nmsg: %s\n%s\n", amcf->amqp_exchange.data, amcf->amqp_queue.data, messagebody.data, msg);
+	ngx_sprintf(response.data, "%s::%s\nmessagebody: %s\n%s\n", amcf->amqp_exchange.data, amcf->amqp_queue.data, messagebody.data, msg);
 	response.len=ngx_strlen(response.data);
 
 	b=ngx_palloc(r->pool, sizeof(ngx_buf_t));
@@ -308,6 +311,8 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		return rc;
 	}
 	free(msg);
+
+
 	return ngx_http_output_filter(r, &out);
 ////////////////////////////////
 	error:
@@ -340,7 +345,9 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
 		return rc;
 	}
+
 	free(msg);
+
 	return ngx_http_output_filter(r, &out);
 
 
