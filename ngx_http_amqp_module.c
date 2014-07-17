@@ -7,6 +7,7 @@
 #include <amqp_framing.h>
 #include <syslog.h>
 
+
 typedef struct{
 	ngx_str_t amqp_ip;
 	ngx_uint_t amqp_port;
@@ -18,9 +19,13 @@ typedef struct{
 	amqp_connection_state_t conn;
 	ngx_uint_t init;
 	ngx_uint_t amqp_debug;
+	ngx_str_t script_source;
+	ngx_array_t* lengths;
+	ngx_array_t* values;
 }ngx_http_amqp_conf_t;
 
 
+static void ngx_http_amqp_exit(ngx_cycle_t* cycle);
 static char * ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void* ngx_http_amqp_create_conf(ngx_conf_t *cf);
 static char* ngx_http_amqp_merge_conf(ngx_conf_t *cf, void* parent, void* child);
@@ -30,7 +35,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r);
 static ngx_command_t ngx_http_amqp_commands[] = {
 	{
 		ngx_string("amqp_publish"),
-		NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
+		NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
 		ngx_http_amqp,
 		NGX_HTTP_LOC_CONF_OFFSET,
 		0,
@@ -119,8 +124,8 @@ ngx_module_t ngx_http_amqp_module = {
     NULL,                          /* init process */
     NULL,                          /* init thread */
     NULL,                          /* exit thread */
-    NULL,                          /* exit process */
-    NULL,                          /* exit master */
+    ngx_http_amqp_exit,                          /* exit process */
+    ngx_http_amqp_exit,                          /* exit master */
 	NGX_MODULE_V1_PADDING
 };
 
@@ -226,99 +231,24 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	ngx_chain_t out;
 	ngx_buf_t* b;
 	ngx_str_t response;
-
-
-	char* exchange;
-	char* routingkey;
-	char* messagebody;
-
+	ngx_str_t messagebody;
 	ngx_int_t rc;
-	ngx_str_t rum, referer, user_agent;
-	ngx_str_t create_time;
-
-	u_char* ref;
-	size_t len;
-	time_t date;
-	ngx_str_t client_ip;
 	u_char* empty_response;
-	//time created
-	date=time(0);
 
 	char* msg;
+
+	
 	int init=(int)amcf->init;
 
-	create_time.data=ngx_pcalloc(r->pool, 40);
-	ngx_memzero(create_time.data, sizeof(create_time.data)+1);
-	ngx_http_time(create_time.data, date);
-	create_time.len=ngx_strlen(create_time.data);
-
-	//user-agent
-	if(r->headers_in.user_agent!=NULL){
-		user_agent.data=r->headers_in.user_agent->value.data;
-		user_agent.len=r->headers_in.user_agent->value.len;
+	if(amcf->lengths==NULL){
+		messagebody.data=amcf->script_source.data;
+		messagebody.len=amcf->script_source.len;
 	}
 	else{
-		user_agent.data=(u_char*)"null";
-		user_agent.len=sizeof(user_agent)-1;
-	}
-
-	//referer
-	if(r->headers_in.referer!=NULL){
-		ref=r->headers_in.referer->value.data;
-		len=r->headers_in.referer->value.len;
-		if(ngx_strncasecmp(ref, (u_char*)"http://", 7)==0){
-			ref+=7;
-			len-=7;
+		if(ngx_http_script_run(r, &messagebody, amcf->lengths->elts, 0, amcf->values->elts)==NULL){
+			return NGX_ERROR;
 		}
-		else if(ngx_strncasecmp(ref, (u_char*)"https://", 8)==0){
-			ref+=8;
-			len-=8;
-		}
-		referer.data=ref;
-		referer.len=len;
 	}
-	else{
-		referer.data=(u_char*)"null";
-		referer.len=sizeof(referer)-1;
-	}
-
-
-	//client ip
-	client_ip.data=ngx_pcalloc(r->pool, r->connection->addr_text.len);
-	client_ip.len=r->connection->addr_text.len;
-	ngx_memzero(client_ip.data, sizeof(client_ip)+1);
-	ngx_memcpy(client_ip.data, r->connection->addr_text.data, r->connection->addr_text.len);
-
-
-	//parse for messagebody
-	rc=ngx_http_arg(r, (u_char*) "rum", 3, &rum);
-	if(rc!=NGX_OK){
-		syslog(LOG_ERR, "Cannot parsing rum arg from %s", client_ip.data);
-		return NGX_ERROR;
-	}
-
-	messagebody=(char*)malloc(rum.len+referer.len+user_agent.len+create_time.len+client_ip.len+36);
-
-	memset(messagebody, 0, rum.len+referer.len+user_agent.len+create_time.len+client_ip.len+36+1);
-	memcpy(messagebody, rum.data, rum.len);
-	strcat(messagebody, "DELIMITER");
-	strcat(messagebody, (char*)referer.data);
-	strcat(messagebody, "DELIMITER");
-	strcat(messagebody, (char*)user_agent.data);
-	strcat(messagebody, "DELIMITER");
-	strcat(messagebody, (char*)create_time.data);
-	strcat(messagebody, "DELIMITER");
-	strcat(messagebody, (char*)client_ip.data);
-
-	//amqp variables
-
-	exchange=(char*)malloc(amcf->amqp_exchange.len);
-	memset(exchange, 0, sizeof(exchange)+1);
-	memcpy(exchange, amcf->amqp_exchange.data, amcf->amqp_exchange.len+1);
-
-	routingkey=(char*)malloc(amcf->amqp_queue.len);
-	memset(routingkey, 0, sizeof(routingkey)+1);
-	memcpy(routingkey, amcf->amqp_queue.data, amcf->amqp_queue.len+1);
 
 
 	msg=(char*)malloc(1024);
@@ -334,11 +264,11 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	props._flags = AMQP_BASIC_CONTENT_TYPE_FLAG | AMQP_BASIC_DELIVERY_MODE_FLAG;
 	props.content_type = amqp_cstring_bytes("text/plain");
 	props.delivery_mode = 2;
-	if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes(exchange), amqp_cstring_bytes(routingkey), 0, 0, &props, amqp_cstring_bytes(messagebody)), "Publishing", msg)){
+	if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)messagebody.data)), "Publishing", msg)){
 		syslog(LOG_WARNING, "Cannot publish. Try to republish.");
 		memset(msg, 0, sizeof(msg)+1);
 		if(connect_amqp(amcf, msg)<0) goto error;
-		if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes(exchange), amqp_cstring_bytes(routingkey), 0, 0, &props, amqp_cstring_bytes(messagebody)), "Publishing", msg)){
+		if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)messagebody.data)), "Publishing", msg)){
 			goto error;
 		}
 
@@ -346,87 +276,113 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	sprintf(msg, "NO ERROR init=%d", init);
 
 
-  	r->headers_out.content_type_len = sizeof("text/html") - 1;
-  	r->headers_out.content_type.data = (u_char *) "text/html";
+	r->headers_out.content_type_len = sizeof("text/html") - 1;
+	r->headers_out.content_type.data = (u_char *) "text/html";
 
 
-  	response.data=ngx_pcalloc(r->pool, 1024);
-  	ngx_sprintf(response.data, "%s::%s\nmsg: %s\n%s\n", exchange, routingkey, messagebody, msg);
-  	response.len=ngx_strlen(response.data);
+	response.data=ngx_pcalloc(r->pool, 1024);
+	ngx_sprintf(response.data, "%s::%s\nmsg: %s\n%s\n", amcf->amqp_exchange.data, amcf->amqp_queue.data, messagebody.data, msg);
+	response.len=ngx_strlen(response.data);
 
-  	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
-  	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
-  	out.buf=b;
-  	out.next=NULL;
+	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
+	out.buf=b;
+	out.next=NULL;
 
-  	if(amcf->amqp_debug){
-	  	b->pos=response.data;
-  		b->last=response.data+response.len;
-  		r->headers_out.content_length_n=response.len;
-  	}
-  	else{
-  		empty_response=(u_char*)"\n";
-  		b->pos=empty_response;
-  		b->last=empty_response+sizeof(empty_response);
-  		r->headers_out.content_length_n=sizeof(empty_response);
-  	}
-  	b->memory=1;
-  	b->last_buf=1;
+	if(amcf->amqp_debug){
+		b->pos=response.data;
+		b->last=response.data+response.len;
+		r->headers_out.content_length_n=response.len;
+	}
+	else{
+		empty_response=(u_char*)"\n";
+		b->pos=empty_response;
+		b->last=empty_response+sizeof(empty_response);
+		r->headers_out.content_length_n=sizeof(empty_response);
+	}
+	b->memory=1;
+	b->last_buf=1;
 
-  	r->headers_out.status=NGX_HTTP_OK;
-  	
+	r->headers_out.status=NGX_HTTP_OK;
 
-  	rc=ngx_http_send_header(r);
-  	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
-  		return rc;
-  	}
-  	return ngx_http_output_filter(r, &out);
+
+	rc=ngx_http_send_header(r);
+	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
+		return rc;
+	}
+	return ngx_http_output_filter(r, &out);
 ////////////////////////////////
-error:
-  	amcf->init=0;
-  	response.data=ngx_pcalloc(r->pool, 1024);
-  	ngx_sprintf(response.data, "Error: %s\n", msg);
-  	response.len=ngx_strlen(response.data);
-  	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
-  	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
-  	out.buf=b;
-  	out.next=NULL;
+	error:
+	amcf->init=0;
+	response.data=ngx_pcalloc(r->pool, 1024);
+	ngx_sprintf(response.data, "Error: %s\n", msg);
+	response.len=ngx_strlen(response.data);
+	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
+	out.buf=b;
+	out.next=NULL;
 
-  	if(amcf->amqp_debug){
-	  	b->pos=response.data;
-  		b->last=response.data+response.len;
-  		r->headers_out.content_length_n=response.len;
-  	}
-  	else{
-  		empty_response=(u_char*)"Error!";
-  		b->pos=empty_response;
-  		b->last=empty_response+sizeof(empty_response);
-  		r->headers_out.content_length_n=sizeof(empty_response);
-  	}
-  	b->memory=1;
-  	b->last_buf=1;
+	if(amcf->amqp_debug){
+		b->pos=response.data;
+		b->last=response.data+response.len;
+		r->headers_out.content_length_n=response.len;
+	}
+	else{
+		empty_response=(u_char*)"Error!";
+		b->pos=empty_response;
+		b->last=empty_response+sizeof(empty_response);
+		r->headers_out.content_length_n=sizeof(empty_response);
+	}
+	b->memory=1;
+	b->last_buf=1;
 
-  	r->headers_out.status=NGX_HTTP_OK;
+	r->headers_out.status=NGX_HTTP_OK;
 
-  	rc=ngx_http_send_header(r);
-  	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
-  		return rc;
-  	}
-  	return ngx_http_output_filter(r, &out);
+	rc=ngx_http_send_header(r);
+	if(rc==NGX_ERROR||rc>NGX_OK||r->header_only){
+		return rc;
+	}
+	return ngx_http_output_filter(r, &out);
 
 
 
-  }
+}
 
-  static char * ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
-  	ngx_http_amqp_conf_t* amcf=conf;
-  	amcf->init=0;
-  	openlog("nginx-amqp", LOG_CONS|LOG_PID, LOG_LOCAL0);
-  	ngx_http_core_loc_conf_t *clcf;
+static char * ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
+	if(cf->args->nelts!=2) return NGX_CONF_ERROR;
+	ngx_http_core_loc_conf_t *clcf;
+	ngx_http_amqp_conf_t* amcf=conf;
+	ngx_str_t* val=cf->args->elts;
+	ngx_http_script_compile_t sc;
+	ngx_uint_t n;
+
+
+	amcf->init=0;
+	openlog("amqp-publish", LOG_CONS|LOG_PID, LOG_LOCAL0);
+	
 
 
 	clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
 	clcf->handler = ngx_http_amqp_handler;
+
+
+	
+
+	n=ngx_http_script_variables_count(&val[1]);
+	amcf->script_source.data=val[1].data;
+	amcf->script_source.len=val[1].len;
+	if(n>0){
+		ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
+
+		sc.cf=cf;
+		sc.source=&val[1];
+		sc.lengths=&amcf->lengths;
+		sc.values=&amcf->values;
+		sc.variables=n;
+		sc.complete_lengths=1;
+		sc.complete_values=1;
+		if(ngx_http_script_compile(&sc)!=NGX_OK) return NGX_CONF_ERROR;
+	}
 
 	return NGX_CONF_OK;
 }
@@ -445,6 +401,8 @@ static void* ngx_http_amqp_create_conf(ngx_conf_t *cf){
 	conf->init=NGX_CONF_UNSET_UINT;
 	conf->socket=NULL;
 	conf->amqp_port=NGX_CONF_UNSET_UINT;
+	conf->lengths=NULL;
+	conf->values=NULL;
 
 	return conf;
 }
@@ -465,5 +423,13 @@ static char* ngx_http_amqp_merge_conf(ngx_conf_t *cf, void* parent, void* child)
 	ngx_conf_merge_uint_value(conf->init, prev->init, 0);
 	ngx_conf_merge_uint_value(conf->amqp_debug, prev->amqp_debug, 0);
 
+
+
 	return NGX_CONF_OK;
+}
+static void ngx_http_amqp_exit(ngx_cycle_t* cycle){
+	ngx_http_amqp_conf_t* amcf=(ngx_http_amqp_conf_t*)ngx_get_conf(cycle->conf_ctx, ngx_http_amqp_module);
+	amqp_channel_close(amcf->conn, 1, AMQP_REPLY_SUCCESS);
+	amqp_connection_close(amcf->conn, AMQP_REPLY_SUCCESS);
+	amqp_destroy_connection(amcf->conn);
 }
