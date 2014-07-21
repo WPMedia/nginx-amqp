@@ -284,7 +284,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	ngx_sprintf(response.data, "%s::%s\nmessagebody: %s\n%s\n", amcf->amqp_exchange.data, amcf->amqp_queue.data, messagebody.data, msg);
 	response.len=ngx_strlen(response.data);
 
-	b=ngx_palloc(r->pool, sizeof(ngx_buf_t));
+	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
 	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	out.buf=b;
 	out.next=NULL;
@@ -319,7 +319,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	response.data=ngx_palloc(r->pool, 1024);
 	ngx_sprintf(response.data, "Error: %s\n", msg);
 	response.len=ngx_strlen(response.data);
-	b=ngx_palloc(r->pool, sizeof(ngx_buf_t));
+	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
 	if(b==NULL) return NGX_HTTP_INTERNAL_SERVER_ERROR;
 	out.buf=b;
 	out.next=NULL;
