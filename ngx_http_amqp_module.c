@@ -235,6 +235,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	u_char* empty_response;
 
 	u_char* msg;
+	u_char* msgbody;
 
 
 	ngx_uint_t init=amcf->init;
@@ -248,8 +249,10 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 		if(ngx_http_script_run(r, &messagebody, amcf->lengths->elts, 0, amcf->values->elts)==NULL){
 			return NGX_ERROR;
 		}
-
 	}
+
+	msgbody=ngx_pcalloc(r->pool, messagebody.len);
+	ngx_memcpy(msgbody, messagebody.data, messagebody.len);
 
 	msg=ngx_palloc(r->pool, 1024);
 	ngx_memzero(msg, sizeof(msg)+1);
@@ -264,11 +267,11 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 	props._flags = AMQP_BASIC_CONTENT_TYPE_FLAG | AMQP_BASIC_DELIVERY_MODE_FLAG;
 	props.content_type = amqp_cstring_bytes("text/plain");
 	props.delivery_mode = 2;
-	if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)messagebody.data)), (u_char*)"Publishing", msg)){
+	if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)msgbody)), (u_char*)"Publishing", msg)){
 		syslog(LOG_WARNING, "Cannot publish. Try to republish.");
 		memset(msg, 0, sizeof(msg)+1);
 		if(connect_amqp(amcf, msg)<0) goto error;
-		if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)messagebody.data)), (u_char*)"Publishing", msg)){
+		if(get_error(amqp_basic_publish(amcf->conn, 1, amqp_cstring_bytes((char*)amcf->amqp_exchange.data), amqp_cstring_bytes((char*)amcf->amqp_queue.data), 0, 0, &props, amqp_cstring_bytes((char*)msgbody)), (u_char*)"Publishing", msg)){
 			goto error;
 		}
 
@@ -281,7 +284,7 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 
 
 	response.data=ngx_palloc(r->pool, 1024);
-	ngx_sprintf(response.data, "%s::%s\nmessagebody: %s\n%s\n", amcf->amqp_exchange.data, amcf->amqp_queue.data, messagebody.data, msg);
+	ngx_sprintf(response.data, "%s::%s\nmessagebody: %s\n%s\n", amcf->amqp_exchange.data, amcf->amqp_queue.data, msgbody, msg);
 	response.len=ngx_strlen(response.data);
 
 	b=ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
