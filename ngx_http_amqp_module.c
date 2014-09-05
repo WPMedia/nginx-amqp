@@ -240,7 +240,7 @@ int connect_amqp(amqp_connection_config_t* amqp_connection_config, amqp_connecti
                        (char*)amqp_connection_config->amqp_user.data,
                        (char*)amqp_connection_config->amqp_password.data);
 
-    if(get_amqp_error(reply, (u_char*)"Logging in", error)){
+    if (get_amqp_error(reply, (u_char*)"Logging in", error)){
         return -1;
     }
     amqp_channel_open(amcf->conn, 1);
