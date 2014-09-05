@@ -7,22 +7,38 @@
 #include <amqp_framing.h>
 #include <syslog.h>
 
+#define NGX_AMQP_SOCKET_CREATE_FAILURE 1
+#define NGX_AMQP_SOCKET_OPEN_FAILURE 2
+
+typedef struct {
+  u_char*         message;
+  ngx_uint_t      code;
+} amqp_error_t;
+
+typedef struct {
+  ngx_str_t         amqp_ip;
+  ngx_uint_t        amqp_port;
+  ngx_str_t         amqp_queue;
+  ngx_str_t         amqp_user;
+  ngx_str_t         amqp_password;
+} amqp_connection_config_t;
+
+typedef struct {
+  ngx_str_t                     amqp_password;
+  amqp_socket_t*                socket;
+  amqp_connection_state_t       conn;
+  amqp_error_t*                 error;
+} amqp_connection_t;
 
 typedef struct{
-    ngx_str_t amqp_ip;
-    ngx_uint_t amqp_port;
-    ngx_str_t amqp_exchange;
-    ngx_str_t amqp_queue;
-    ngx_str_t amqp_user;
-    ngx_str_t amqp_password;
-    amqp_socket_t* socket;
-    amqp_connection_state_t conn;
-    ngx_uint_t init;
-    ngx_uint_t amqp_debug;
-    ngx_str_t script_source;
-    ngx_array_t* lengths;
-    ngx_array_t* values;
-}ngx_http_amqp_conf_t;
+    amqp_connection_config_t        connection_config;
+    amqp_connection_t               connection
+    ngx_uint_t                      init;
+    ngx_uint_t                      amqp_debug;
+    ngx_str_t                       script_source;
+    ngx_array_t*                    lengths;
+    ngx_array_t*                    values;
+} ngx_http_amqp_conf_t;
 
 
 static void ngx_http_amqp_exit(ngx_cycle_t* cycle);
@@ -46,7 +62,7 @@ static ngx_command_t ngx_http_amqp_commands[] = {
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_amqp_conf_t, amqp_ip),
+        offsetof(ngx_http_amqp_conf_t, connection_config.amqp_ip),
         NULL
     },
     {
@@ -54,7 +70,7 @@ static ngx_command_t ngx_http_amqp_commands[] = {
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_num_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_amqp_conf_t, amqp_port),
+        offsetof(ngx_http_amqp_conf_t, connection_config.amqp_port),
         NULL
     },
     {
@@ -62,7 +78,7 @@ static ngx_command_t ngx_http_amqp_commands[] = {
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_amqp_conf_t, amqp_exchange),
+        offsetof(ngx_http_amqp_conf_t, connection_config.amqp_exchange),
         NULL
     },
     {
@@ -70,7 +86,7 @@ static ngx_command_t ngx_http_amqp_commands[] = {
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_amqp_conf_t, amqp_queue),
+        offsetof(ngx_http_amqp_conf_t, connection_config.amqp_queue),
         NULL
     },
     {
@@ -78,7 +94,7 @@ static ngx_command_t ngx_http_amqp_commands[] = {
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_amqp_conf_t, amqp_user),
+        offsetof(ngx_http_amqp_conf_t, connection_config.amqp_user),
         NULL
     },
     {
@@ -86,7 +102,7 @@ static ngx_command_t ngx_http_amqp_commands[] = {
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_amqp_conf_t, amqp_password),
+        offsetof(ngx_http_amqp_conf_t, connection_config.amqp_password),
         NULL
     },
     {
@@ -102,7 +118,7 @@ static ngx_command_t ngx_http_amqp_commands[] = {
 
 static ngx_http_module_t ngx_http_amqp_module_ctx = {
     NULL,                          /* preconfiguration */
-        NULL,                         /* postconfiguration */
+    NULL,                         /* postconfiguration */
 
     NULL,                          /* create main configuration */
     NULL,                          /* init main configuration */
@@ -194,22 +210,36 @@ int get_amqp_error(amqp_rpc_reply_t x, u_char const *context, u_char* error)
     return 1;
 }
 
-int connect_amqp(ngx_http_amqp_conf_t* amcf, u_char* error){
-    int status;
+int connect_amqp(amqp_connection_config_t* amqp_connection_config, amqp_connection_t* amqp_connection){
     amqp_rpc_reply_t reply;
-        //initialize connection and channel
-    amcf->conn=amqp_new_connection();
-    amcf->socket=amqp_tcp_socket_new(amcf->conn);
-    if(!amcf->socket){
-        error=(u_char*)"Creating TCP socket";
-        return -1;
+
+    //initialize connection and channel
+    amqp_connection->conn = amqp_new_connection();
+    amqp_connection->socket = amqp_tcp_socket_new(amqp_connection_config->conn);
+
+    if (!amcf->socket) {
+      amqp_connection->error->message = "Creating TCP Socket";
+      amqp_connection->error->code = NGX_AMQP_SOCKET_CREATE_FAILURE;
+      return -1;
     }
-    status=amqp_socket_open(amcf->socket, (char*)amcf->amqp_ip.data, (int)amcf->amqp_port);
-    if(status){
-        error=(u_char*)"Opening TCP socket";
-        return -1;
+
+    status = amqp_socket_open(amqp_connection->socket, (char*)amqp_connection_config->amqp_ip.data, (int)amqp_connection_config->amqp_port);
+
+    if (status) {
+      amqp_connection->error->message = "Opening TCP socket";
+      amqp_connection->error->code = NGX_AMQP_SOCKET_OPEN_FAILURE;
+      return -1;
     }
-    reply=amqp_login(amcf->conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN,(char*)amcf->amqp_user.data, (char*)amcf->amqp_password.data);
+
+    reply = amqp_login(amqp_connection->conn,
+                      "/",
+                       0,
+                       131072,
+                       0,
+                       AMQP_SASL_METHOD_PLAIN,
+                       (char*)amqp_connection_config->amqp_user.data,
+                       (char*)amqp_connection_config->amqp_password.data);
+
     if(get_amqp_error(reply, (u_char*)"Logging in", error)){
         return -1;
     }
@@ -220,47 +250,46 @@ int connect_amqp(ngx_http_amqp_conf_t* amcf, u_char* error){
     return 0;
 }
 
-
-
-
-
 ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 
-    ngx_http_amqp_conf_t* amcf=ngx_http_get_module_loc_conf(r, ngx_http_amqp_module);
     ngx_chain_t out;
     ngx_buf_t* b;
     ngx_str_t response;
     ngx_str_t messagebody;
     ngx_int_t rc;
     u_char* empty_response;
-
     u_char* msg;
     u_char* msgbody;
+    ngx_http_amqp_conf_t* amcf;
+    ngx_uint_t init;
+    amqp_basic_properties_t props;
 
-    ngx_uint_t init=amcf->init;
+    amcf = ngx_http_get_module_loc_conf(r, ngx_http_amqp_module);
+    init = amcf->init;
 
-    if(amcf->lengths==NULL){
-        messagebody.data=ngx_palloc(r->pool, amcf->script_source.len);
+    if (amcf->lengths == NULL){
+        messagebody.data = ngx_palloc(r->pool, amcf->script_source.len);
         ngx_memcpy(messagebody.data, amcf->script_source.data, amcf->script_source.len);
-        messagebody.len=amcf->script_source.len;
-    }
-    else{
-        if(ngx_http_script_run(r, &messagebody, amcf->lengths->elts, 0, amcf->values->elts)==NULL){
+        messagebody.len = amcf->script_source.len;
+    } else {
+        if (ngx_http_script_run(r, &messagebody, amcf->lengths->elts, 0, amcf->values->elts) == NULL){
             return NGX_ERROR;
         }
 
     }
-    msgbody=ngx_pcalloc(r->pool, messagebody.len);
+
+    msgbody = ngx_pcalloc(r->pool, messagebody.len);
     ngx_memcpy(msgbody, messagebody.data, messagebody.len);
 
-    msg=ngx_pcalloc(r->pool, 4096);
-    if(!amcf->init){
-        amcf->init=1;
+    msg = ngx_pcalloc(r->pool, 4096);
 
-        if(connect_amqp(amcf, msg)<0) goto error;
+    if( !amcf->init ){
+        amcf->init = 1;
+
+        if (connect_amqp(amcf, msg) < 0) {
+          goto error;
+        }
     }
-
-    amqp_basic_properties_t props;
 
     props._flags = AMQP_BASIC_CONTENT_TYPE_FLAG | AMQP_BASIC_DELIVERY_MODE_FLAG;
     props.content_type = amqp_cstring_bytes("text/plain");
@@ -352,40 +381,42 @@ ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r){
 
 }
 
-static char * ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
-    if(cf->args->nelts!=2) return NGX_CONF_ERROR;
+static char* ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
     ngx_http_core_loc_conf_t *clcf;
-    ngx_http_amqp_conf_t* amcf=conf;
-    ngx_str_t* val=cf->args->elts;
     ngx_http_script_compile_t sc;
     ngx_uint_t n;
 
+    ngx_str_t* val = cf->args->elts;
+    ngx_http_amqp_conf_t* amcf = conf;
 
-    amcf->init=0;
+    if (cf->args->nelts != 2) {
+      return NGX_CONF_ERROR;
+    }
+
+    amcf->init = 0; //What does init do?
     openlog("amqp-publish", LOG_CONS|LOG_PID, LOG_LOCAL0);
-
-
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_http_amqp_handler;
 
+    n = ngx_http_script_variables_count(&val[1]);
+    amcf->script_source.data = val[1].data;
+    amcf->script_source.len = val[1].len;
 
-
-
-    n=ngx_http_script_variables_count(&val[1]);
-    amcf->script_source.data=val[1].data;
-    amcf->script_source.len=val[1].len;
-    if(n>0){
+    if (n > 0) {
         ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
 
-        sc.cf=cf;
-        sc.source=&val[1];
-        sc.lengths=&amcf->lengths;
-        sc.values=&amcf->values;
-        sc.variables=n;
-        sc.complete_lengths=1;
-        sc.complete_values=1;
-        if(ngx_http_script_compile(&sc)!=NGX_OK) return NGX_CONF_ERROR;
+        sc.cf = cf;
+        sc.source = &val[1];
+        sc.lengths = &amcf->lengths;
+        sc.values = &amcf->values;
+        sc.variables = n;
+        sc.complete_lengths = 1;
+        sc.complete_values = 1;
+
+        if (ngx_http_script_compile(&sc) != NGX_OK) {
+          return NGX_CONF_ERROR;
+        }
     }
 
     return NGX_CONF_OK;
