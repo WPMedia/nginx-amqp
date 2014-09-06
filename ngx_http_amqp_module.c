@@ -142,28 +142,41 @@ ngx_module_t ngx_http_amqp_module = {
 
 
 static ngx_int_t 
-amqp_is_connection_error(amqp_rpc_reply_t amqp_reply)
+amqp_is_connection_error(amqp_rpc_reply_t amqp_reply, ngx_http_request_t* r)
 {
-    if (AMQP_RESPONSE_NORMAL) {
-	return 1;
-    } else {
-	return 0;
+    switch (amqp_reply.reply_type) {
+	case AMQP_RESPONSE_NORMAL:
+	    return NGX_OK;
+	break;
+	case AMQP_RESPONSE_NONE:
+	    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+			    "Missing RPC reply type!");
+	break;
+	case AMQP_RESPONSE_LIBRARY_EXCEPTION:
+	    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+			    "%s", amqp_error_string2(amqp_reply.library_erro));
+	break;
+	case AMQP_RESPONSE_SERVER_EXCEPTION:
+	    switch (amqp_reply.reply.id) {
+		case AMQP_CONNECTION_CLOSE_METHOD: {
+		    amqp_connection_close_t *m = (amqp_connection_close_t*) amqp_reply.reply.decoded;
+		    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+				    "Server connection error %d, message: %.*s", 
+				    m->reply_code,
+				    (int) m->reply_text.len, 
+				    (char*) m->reply_text.bytes);
+		break;
+		}
+	    }
+	break;
+	default:
+	    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+			    "Unknown server error, method id 0x%08X\n",
+			    amqp_reply.reply.id);
+	break;
     }
-}
 
-static ngx_uint_t
-initialize_connection(amqp_connection_config_t* amqp_connection_config, amqp_connection_t* amqp_connection) {
-    amqp_connection->conn = amqp_new_connection();
-    amqp_connection->socket = amqp_tcp_socket_new(amqp_connection_config->conn);
-
-    //If we failed to connect to the socket, destroy the connection
-    //and *shoud* destroy socket too
-    if (!amqp_connection->socket) {
-	amqp_destroy_connection(amqp_connection->conn);
-	return 0;
-    }
-
-    return 1;
+    return NGX_ERROR;    
 }
 
 static ngx_int_t 
@@ -172,17 +185,25 @@ connect_amqp(amqp_connection_config_t* amqp_connection_config, amqp_connection_t
 
     //If we're already connected, carry on.
     if (amqp_connection->is_connected) {
-	return 1;
+	return NGX_OK;
     }
 
-    if (intialize_connection(amqp_connection_config, amqp_connection) {
-	return 0;
+    amqp_connection->conn = amqp_new_connection();
+    amqp_connection->socket = amqp_tcp_socket_new(amqp_connection_config->connf);
+
+    if (!amqp_connection->socket) {
+	amqp_destroy_connection(amqp_connection->conn);
+	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+			"Could not create TCP socket");
+	return NGX_ERROR;
     }
 
     status = amqp_socket_open(amqp_connection->socket, (char*)amqp_connection_config->amqp_ip.data, (int)amqp_connection_config->amqp_port);
 
     if (!status) {
-	return 0;
+    	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+			"Could not open TCP Socket");
+	return NGX_ERROR;
     }
 
     reply = amqp_login(amqp_connection->conn,
@@ -194,35 +215,33 @@ connect_amqp(amqp_connection_config_t* amqp_connection_config, amqp_connection_t
                        (char*)amqp_connection_config->amqp_user.data,
                        (char*)amqp_connection_config->amqp_password.data);
 
-    if (amqp_is_connection_error(reply)) {
-	return 0;
+    if (amqp_is_connection_error(reply, r)) {
+	return NGX_ERROR;
     }
 
     //Does the channel need to be destroyed?
     amqp_channel_open(amcf->conn, 1);
 
-    if (amqp_is_connection_error(amqp_get_rpc_reply(amqp_connection->conn)) {
-	return 0;
+    if (amqp_is_connection_error(amqp_get_rpc_reply(amqp_connection->conn), r) {
+	return NGX_ERROR;
     }
 
     amqp_connection->is_connected = 1;
 
-    return 1;
+    return NGX_OK;
 }
 
-static ngx_str_t
-ngx_http_amqp_message_eval(ngx_http_request_t *r, ngx_http_amqp_conf_t* amcf) {
-    ngx_str_t message_body;
-
+static ngx_int_t
+ngx_http_amqp_message_eval(ngx_http_request_t *r, ngx_http_amqp_conf_t* amcf, ngx_str_t* message_body) {
     //Either this is a string with script variables or it's not, in which case
     //just return the conf string.
     if (amcf->message_lengths == NULL) {
 	return amcf->message_values;
     } else {
-	if (ngx_http_script_run(r, &message_body, amcf->message_lengths, 0, amcf->message_values->elts) != NULL) {
-	    return message_body;
+	if (ngx_http_script_run(r, message_body, amcf->message_lengths, 0, amcf->message_values->elts) != NULL) {
+	    return NGX_OK;
 	} else {
-	    return NULL;
+	    return NGX_ERROR;
 	}
     }
 }
@@ -253,9 +272,10 @@ ngx_amqp_publish(amqp_connection_config_t* amqp_connection_config, amqp_connecti
     //Somethings up, reconnect next time around.
     if (i == MAX_PUBLISH_RETRIES) {
 	amqp_connection->is_connected = 0;
+	return NGX_ERROR;
     }
 
-    return 1;
+    return NGX_OK;
 }
 
 static ngx_int_t 
@@ -272,15 +292,15 @@ ngx_http_amqp_handler(ngx_http_request_t* r) {
 
     amcf = ngx_http_get_module_loc_conf(r, ngx_http_amqp_module);
 
-    if (!(message_body = ngx_http_amqp_message_eval(r, amcf)) {
+    if (ngx_http_amqp_message_eval(r, amcf, &message_body) == NGX_ERROR) {
 	return NGX_HTTP_INTERNAL_SERVER_ERROR;	    
     }
 
-    if (!connect_amqp(&amcf->connection_config, &amcf->connection, r)) {
+    if (connect_amqp(&amcf->connection_config, &amcf->connection, r) == NGX_ERROR) {
 	goto error;
     }
 
-    if (!ngx_amqp_publish(amcf->connection_config, amcf->connection, message_body)) {
+    if (ngx_amqp_publish(amcf->connection_config, amcf->connection, message_body) == NGX_ERROR) {
 	goto error;
     }
 
@@ -329,6 +349,7 @@ ngx_http_amqp_handler(ngx_http_request_t* r) {
 ////////////////////////////////
     error:
 	amcf->connection->is_connected = 0;
+	amqp_destroy_connection(amcf->connection->conn);
 	return NGX_HTTP_INTERNAL_SERVER_ERROR;
 }
 
@@ -373,22 +394,15 @@ static char* ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
     return NGX_CONF_OK;
 }
 
-
-static void* ngx_http_amqp_create_conf(ngx_conf_t *cf){
+static void* 
+ngx_http_amqp_create_conf(ngx_conf_t *cf){
     ngx_http_amqp_conf_t* conf;
 
-    conf=(ngx_http_amqp_conf_t*)ngx_pcalloc(cf->pool,
-        sizeof(ngx_http_amqp_conf_t));
-    if(conf==NULL){
+    conf = (ngx_http_amqp_conf_t*)ngx_pcalloc(cf->pool, sizeof(ngx_http_amqp_conf_t));
+    
+    if(conf == NULL){
         return NULL;
     }
-
-    conf->amqp_debug=NGX_CONF_UNSET_UINT;
-    conf->init=NGX_CONF_UNSET_UINT;
-    conf->socket=NULL;
-    conf->amqp_port=NGX_CONF_UNSET_UINT;
-    conf->lengths=NULL;
-    conf->values=NULL;
 
     return conf;
 }
@@ -398,21 +412,18 @@ static char* ngx_http_amqp_merge_conf(ngx_conf_t *cf, void* parent, void* child)
     ngx_http_amqp_conf_t* prev=parent;
     ngx_http_amqp_conf_t* conf=child;
 
-
-
-    ngx_conf_merge_str_value(conf->amqp_ip, prev->amqp_ip, "127.0.0.1");
-    ngx_conf_merge_uint_value(conf->amqp_port, prev->amqp_port, 5672);
-    ngx_conf_merge_str_value(conf->amqp_exchange, prev->amqp_exchange, "rumExchange");
-    ngx_conf_merge_str_value(conf->amqp_queue, prev->amqp_queue, "rumQueue");
-    ngx_conf_merge_str_value(conf->amqp_user, prev->amqp_user, "guest");
-    ngx_conf_merge_str_value(conf->amqp_password, prev->amqp_password, "guest");
-    ngx_conf_merge_uint_value(conf->init, prev->init, 0);
+    ngx_conf_merge_str_value(conf->connection_config->amqp_ip, prev->connection_config->amqp_ip, "127.0.0.1");
+    ngx_conf_merge_uint_value(conf->connection_config->amqp_port, prev->connection_config->amqp_port, 5672);
+    ngx_conf_merge_str_value(conf->connection_config->amqp_exchange, prev->connection_config->amqp_exchange, "rumExchange");
+    ngx_conf_merge_str_value(conf->connection_config->amqp_queue, prev->connection_config->amqp_queue, "rumQueue");
+    ngx_conf_merge_str_value(conf->connection_config->amqp_user, prev->connection_config->amqp_user, "guest");
+    ngx_conf_merge_str_value(conf->connection_config->amqp_password, prev->connection_config->amqp_password, "guest");
+    ngx_conf_merge_uint_value(conf->connection->is_connected, conf->connection->is_connected, 0);
     ngx_conf_merge_uint_value(conf->amqp_debug, prev->amqp_debug, 0);
-
-
 
     return NGX_CONF_OK;
 }
+
 static void ngx_http_amqp_exit(ngx_cycle_t* cycle){
     ngx_http_amqp_conf_t* amcf=(ngx_http_amqp_conf_t*)ngx_get_conf(cycle->conf_ctx, ngx_http_amqp_module);
     amqp_channel_close(amcf->conn, 1, AMQP_REPLY_SUCCESS);
