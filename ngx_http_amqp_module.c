@@ -9,7 +9,7 @@
 
 #define NGX_AMQP_SOCKET_CREATE_FAILURE 1
 #define NGX_AMQP_SOCKET_OPEN_FAILURE 2
-#define MAX_PUBLISH_RETRIES 5
+#define MAX_PUBLISH_RETRIES 2
 
 typedef struct {
   ngx_str_t         amqp_ip;
@@ -23,7 +23,7 @@ typedef struct {
 typedef struct {
   amqp_socket_t*                socket;
   amqp_connection_state_t       conn;
-  ngx_uint_t 			is_connected;
+  ngx_uint_t                    is_connected;
 } amqp_connection_t;
 
 typedef struct{
@@ -45,6 +45,9 @@ static void* ngx_http_amqp_create_conf(ngx_conf_t *cf);
 static char* ngx_http_amqp_merge_conf(ngx_conf_t *cf, void* parent, void* child);
 static ngx_int_t ngx_http_amqp_handler(ngx_http_request_t* r);
 static ngx_int_t ngx_http_amqp_message_eval(ngx_http_request_t*, ngx_http_amqp_conf_t*, ngx_str_t*);
+static ngx_int_t amqp_is_connection_error(amqp_rpc_reply_t, ngx_http_request_t*);
+static ngx_int_t connect_amqp(amqp_connection_config_t*, amqp_connection_t*, ngx_http_request_t*);
+static ngx_int_t ngx_amqp_publish(amqp_connection_config_t*, amqp_connection_t*, ngx_str_t);
 
 static ngx_command_t ngx_http_amqp_commands[] = {
     {
@@ -145,8 +148,7 @@ ngx_module_t ngx_http_amqp_module = {
 
 
 static ngx_int_t
-amqp_is_connection_error(amqp_rpc_reply_t amqp_reply, ngx_http_request_t* r)
-{
+amqp_is_connection_error(amqp_rpc_reply_t amqp_reply, ngx_http_request_t* r) {
     switch (amqp_reply.reply_type) {
       case AMQP_RESPONSE_NORMAL:
         return NGX_OK;
@@ -183,7 +185,7 @@ amqp_is_connection_error(amqp_rpc_reply_t amqp_reply, ngx_http_request_t* r)
 }
 
 static ngx_int_t
-connect_amqp(amqp_connection_config_t* amqp_connection_config, amqp_connection_t* amqp_connection, ngx_http_request_t* r){
+connect_amqp(amqp_connection_config_t* amqp_connection_config, amqp_connection_t* amqp_connection, ngx_http_request_t* r) {
     amqp_rpc_reply_t    reply;
     int                 status;
 
@@ -314,7 +316,10 @@ ngx_http_amqp_handler(ngx_http_request_t* r) {
     error:
       amcf->connection.is_connected = 0;
       amqp_destroy_connection(amcf->connection.conn);
-      return NGX_HTTP_INTERNAL_SERVER_ERROR;
+
+      cv.value.data = (u_char*)"{\"ok\": false}";
+      cv.value.len = ngx_strlen(cv.value.data);
+      return ngx_http_send_response(r, NGX_HTTP_INTERNAL_SERVER_ERROR, &(application_types[0]), &cv);
 }
 
 static char* ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
