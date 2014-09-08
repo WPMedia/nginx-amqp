@@ -10,6 +10,7 @@
 #define NGX_AMQP_SOCKET_CREATE_FAILURE 1
 #define NGX_AMQP_SOCKET_OPEN_FAILURE 2
 #define MAX_PUBLISH_RETRIES 2
+#define RESPOND_JSON 0 //Blank 200 or simple json response
 
 typedef struct {
   ngx_str_t         amqp_ip;
@@ -31,12 +32,14 @@ typedef struct{
     amqp_connection_t           connection;
     ngx_uint_t                  amqp_debug;
     ngx_str_t                   message_to_publish;
+    ngx_array_t*                flushes;
     ngx_array_t*                message_lengths;
     ngx_array_t*                message_values;
 } ngx_http_amqp_conf_t;
 
 ngx_str_t application_types[] = {
-  ngx_string("application/json")
+  ngx_string("application/json"),
+  ngx_string("text/html")
 };
 
 static void ngx_http_amqp_exit(ngx_cycle_t* cycle);
@@ -308,18 +311,33 @@ ngx_http_amqp_handler(ngx_http_request_t* r) {
     }
 
     ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
-    cv.value.data = (u_char*)"{\"ok\": true}";
-    cv.value.len = ngx_strlen(cv.value.data);
-    return ngx_http_send_response(r, NGX_HTTP_OK, &(application_types[0]), &cv);
+
+    #if RESPOND_JSON
+      cv.value.data = (u_char*)"{\"ok\": true}";
+      cv.value.len = ngx_strlen(cv.value.data);
+      return ngx_http_send_response(r, NGX_HTTP_OK, &(application_types[0]), &cv);
+    #else
+      cv.value.data = (u_char*)"\n";
+      cv.value.len = 1;
+      return ngx_http_send_response(r, NGX_HTTP_OK, &(application_types[1]), &cv);
+    #endif
 
 ////////////////////////////////
     error:
       amcf->connection.is_connected = 0;
       amqp_destroy_connection(amcf->connection.conn);
 
-      cv.value.data = (u_char*)"{\"ok\": false}";
-      cv.value.len = ngx_strlen(cv.value.data);
-      return ngx_http_send_response(r, NGX_HTTP_INTERNAL_SERVER_ERROR, &(application_types[0]), &cv);
+      ngx_memzero(&cv, sizeof(ngx_http_complex_value_t));
+
+      #if RESPOND_JSON
+        cv.value.data = (u_char*)"{\"ok\": false}";
+        cv.value.len = ngx_strlen(cv.value.data);
+        return ngx_http_send_response(r, NGX_HTTP_INTERNAL_SERVER_ERROR, &(application_types[0]), &cv);
+      #else
+        cv.value.data = (u_char*)"\n";
+        cv.value.len = 1;
+        return ngx_http_send_response(r, NGX_HTTP_INTERNAL_SERVER_ERROR, &(application_types[1]), &cv);
+      #endif
 }
 
 static char* ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
@@ -349,6 +367,7 @@ static char* ngx_http_amqp(ngx_conf_t *cf, ngx_command_t *cmd, void *conf){
         sc.cf = cf;
         sc.source = &val[1];
         sc.lengths = &amcf->message_lengths;
+        sc.flushes = &amcf->flushes;
         sc.values = &amcf->message_values;
         sc.variables = num_script_variables;
         sc.complete_lengths = 1;
