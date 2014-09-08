@@ -287,13 +287,7 @@ ngx_amqp_publish(amqp_connection_config_t* amqp_connection_config, amqp_connecti
 
 static ngx_int_t
 ngx_http_amqp_handler(ngx_http_request_t* r) {
-    //ngx_chain_t             out;
-    //ngx_buf_t               *b;
-    //u_char                  *response;
-    //ngx_int_t               response_len;
     ngx_str_t                 message_body;
-    //ngx_int_t               rc;
-    //u_char                  *empty_response;
     ngx_http_amqp_conf_t      *amcf;
     ngx_http_complex_value_t  cv;
 
